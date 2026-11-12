@@ -1,6 +1,7 @@
 //! Desktop-local Parakeet v3. No engine, document, RPC or audio persistence.
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 use parakeet_rs::{ParakeetTDT, Transcriber};
 use sha2::{Digest, Sha256};
 use std::{
@@ -12,9 +13,15 @@ use std::{
     },
 };
 
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 mod resample;
 
 pub const MAX_SECONDS: usize = 60;
+/// Whether this build can transcribe. ONNX Runtime has no Intel macOS build
+/// (Cargo.toml), so there the model is never installed or downloaded and a
+/// session never opens the microphone: each says why instead.
+pub const AVAILABLE: bool = cfg!(not(all(target_os = "macos", target_arch = "x86_64")));
+const UNAVAILABLE: &str = "Dictation isn't available in Zeron for Intel Macs.";
 #[derive(serde::Deserialize)]
 pub struct Artifact {
     pub name: String,
@@ -34,7 +41,8 @@ pub fn download_size() -> u64 {
     manifest().files.iter().map(|f| f.size).sum()
 }
 pub fn installed(dir: &Path) -> bool {
-    manifest()
+    AVAILABLE
+        && manifest()
         .files
         .iter()
         .all(|f| std::fs::metadata(dir.join(&f.name)).is_ok_and(|m| m.len() == f.size))
@@ -43,6 +51,9 @@ pub fn installed(dir: &Path) -> bool {
 
 /// Called only on a worker. Temporary files never establish readiness.
 pub fn download(dir: &Path, cancel: &AtomicBool, mut progress: impl FnMut(u64)) -> Result<()> {
+    if !AVAILABLE {
+        bail!(UNAVAILABLE)
+    }
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         std::fs::create_dir_all(dir)?;
         let client = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(20)).build()?;
@@ -80,7 +91,20 @@ async fn cancelled(cancel: &AtomicBool) {
     }
 }
 
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub struct Recognizer(ParakeetTDT);
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub struct Recognizer;
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+impl Recognizer {
+    pub fn load(_dir: &Path) -> Result<Self> {
+        bail!(UNAVAILABLE)
+    }
+    pub fn transcribe(&mut self, _samples: Vec<f32>, _rate: u32) -> Result<String> {
+        bail!(UNAVAILABLE)
+    }
+}
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 impl Recognizer {
     pub fn load(dir: &Path) -> Result<Self> {
         // Verify before handing bytes to the native runtime, including after restart.
@@ -419,6 +443,9 @@ impl Session {
     /// `device` is an [`InputDevice::id`]; `None` or a disconnected device
     /// records from the system default.
     pub fn start(dir: std::path::PathBuf, device: Option<String>) -> Result<Self> {
+        if !AVAILABLE {
+            bail!(UNAVAILABLE)
+        }
         let admission = BusyGuard::acquire()?;
         let sender = WORKER.get_or_init(|| {
             let (tx, rx) = std::sync::mpsc::sync_channel::<Command>(1);
@@ -595,6 +622,19 @@ mod tests {
         std::fs::write(dir.path().join(&f.name), b"corrupt").unwrap();
         assert!(!installed(dir.path()));
         assert!(Recognizer::load(dir.path()).is_err());
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    #[test]
+    fn intel_mac_says_dictation_is_unavailable_and_touches_nothing() {
+        assert!(!AVAILABLE);
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("model");
+        let err = download(&model, &AtomicBool::new(false), |_| panic!("no download")).unwrap_err();
+        assert_eq!(err.to_string(), UNAVAILABLE);
+        assert!(!model.exists(), "no folder made for a model that can't run");
+        assert!(!installed(&model));
+        assert_eq!(Session::start(model, None).err().unwrap().to_string(), UNAVAILABLE);
+        assert!(!busy(), "refusing never takes the dictation slot");
     }
 }
 

@@ -2204,9 +2204,18 @@ impl Updater {
             running_engine.as_deref(),
             channel::macos_version(),
         );
+        // A macOS app installs only the release's app for this Mac: none listed
+        // (an Intel Mac's, when only arm64's is published) is nothing to offer,
+        // rather than a download that fails each time. A manifest without
+        // files (latest.txt's) is taken at its word.
+        let has_app = bundle.is_none()
+            || manifest.files.is_empty()
+            || manifest
+                .files
+                .contains_key(&mac_app_artifact(&manifest.version));
         let status = UpdateStatus {
             current_version: self.version.to_string(),
-            update_available: offer.installs(),
+            update_available: has_app && offer.installs(),
             latest_version: Some(manifest.version.clone()),
             checked_at: Some(now_ms()),
             error: None,
@@ -2215,7 +2224,7 @@ impl Updater {
                 Offer::Held(why) => Some(why.clone()),
                 _ => None,
             },
-            switch: offer == Offer::Switch,
+            switch: has_app && offer == Offer::Switch,
             install: None,
             can_apply_remotely: None,
             cannot_apply_reason: None,

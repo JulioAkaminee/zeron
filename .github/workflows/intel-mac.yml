@@ -1,0 +1,122 @@
+name: intel mac
+
+# Zeron.app for Intel Macs (x86_64), without dictation (crates/voice: ONNX
+# Runtime has no Intel macOS build). Builds the engine and the zgx app on an
+# Intel runner, packages them as release.yml's macOS job does, checks the
+# bundle, and publishes the dmg as a GitHub release of this repository.
+# Unsigned (ad-hoc): the first launch needs Gatekeeper's "Open Anyway".
+
+on:
+  push:
+    branches: [intel-mac]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+concurrency:
+  group: intel-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  macos-x86_64:
+    runs-on: macos-15-intel
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: version
+        run: |
+          test "$(uname -m)" = x86_64
+          version="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          echo "ZGX_VERSION=$version" >>"$GITHUB_ENV"
+          echo "building Zeron $version for $(uname -m), macOS $(sw_vers -productVersion)"
+      - name: rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      # zgx's terminals are Ghostty's, built with Zig 0.16 (zgx-ghostty-sys).
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/zgx-ghostty
+          key: zgx-ghostty-x86_64-${{ hashFiles('apps/zgx/Cargo.lock') }}
+          restore-keys: zgx-ghostty-x86_64-
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: intel-mac
+          workspaces: |
+            . -> target
+            apps/zgx -> target
+      # The dictation stand-in: says why, never opens the microphone.
+      - name: voice tests (no speech runtime on Intel)
+        run: cargo test --locked -p zeron-voice --lib
+      - name: no speech runtime in the build
+        run: |
+          if cargo tree --locked -p zeron -e normal --target x86_64-apple-darwin | grep -E '[ ─](ort|ort-sys|parakeet-rs) v[0-9]'; then
+            echo "the engine still links ONNX Runtime" >&2
+            exit 1
+          fi
+          if (cd apps/zgx && cargo tree --locked -e normal --target x86_64-apple-darwin) | grep -E '[ ─](ort|ort-sys|parakeet-rs) v[0-9]'; then
+            echo "the app still links ONNX Runtime" >&2
+            exit 1
+          fi
+      - name: the engine, from this commit
+        env:
+          ZERON_ENGINE_VERSION: ${{ env.ZGX_VERSION }}
+          LUAU_CXXFLAGS: -DNDEBUG
+        run: cargo build --release --locked -p zeron --bin zeron-engine
+      - name: package dmg
+        env:
+          CARGO_FLAGS: --locked
+        run: ZGX_ENGINE="$GITHUB_WORKSPACE/target/release/zeron-engine" scripts/package-zgx-macos.sh
+      - name: inspect the bundle
+        run: |
+          app="target/package-zgx/Zeron.app"
+          plist="$app/Contents/Info.plist"
+          plutil -p "$plist"
+          test "$(plutil -extract CFBundleIdentifier raw "$plist")" = sh.zeron.app
+          test "$(plutil -extract ZeronVersion raw "$plist")" = "$ZGX_VERSION"
+          test "$(plutil -extract LSMinimumSystemVersion raw "$plist")" = 13.0
+          test "$(plutil -extract CFBundleVersion raw "$plist")" = "$ZGX_VERSION.9999"
+          test "$(plutil -extract ZeronEngineVersion raw "$plist")" = "$ZGX_VERSION"
+          test "$("$app/Contents/MacOS/zeron" --version)" = "zeron $ZGX_VERSION"
+          test -x "$app/Contents/MacOS/Zeron Engine"
+          test -f "$app/Contents/Resources/ui/app.luau"
+          # Intel binaries, both of them.
+          for bin in "$app/Contents/MacOS/zeron" "$app/Contents/MacOS/Zeron Engine"; do
+            lipo -archs "$bin"
+            test "$(lipo -archs "$bin")" = x86_64
+          done
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -d --entitlements - "$app"
+          test -f "target/package-zgx/zeron-$ZGX_VERSION-macos-x86_64.dmg"
+          hdiutil verify "target/package-zgx/zeron-$ZGX_VERSION-macos-x86_64.dmg"
+          du -sh "$app"
+      - name: checksums
+        run: |
+          cd target/package-zgx
+          shasum -a 256 zeron-*-macos-x86_64.dmg zeron-*-macos-x86_64-app.tar.gz | tee SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeron-macos-x86_64
+          path: |
+            target/package-zgx/*.dmg
+            target/package-zgx/*.tar.gz
+            target/package-zgx/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="intel-v$ZGX_VERSION"
+          cd target/package-zgx
+          files=(zeron-*-macos-x86_64.dmg zeron-*-macos-x86_64-app.tar.gz SHA256SUMS.txt)
+          notes="Zeron $ZGX_VERSION for Intel Macs (x86_64), built from ${GITHUB_SHA::7} on ${{ github.ref_name }}. Dictation is not included (ONNX Runtime has no Intel macOS build). Unsigned: after copying Zeron.app to Applications, open it once with right-click → Open, or System Settings → Privacy & Security → Open Anyway."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+            gh release edit "$tag" --notes "$notes" --target "$GITHUB_SHA"
+          else
+            gh release create "$tag" "${files[@]}" --target "$GITHUB_SHA" \
+              --title "Zeron $ZGX_VERSION for Intel Macs" --notes "$notes"
+          fi

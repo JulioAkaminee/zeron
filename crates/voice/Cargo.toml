@@ -7,10 +7,6 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-parakeet-rs = "=0.3.8"
-# Keep the nested ZGX workspace on the same native runtime as ZUI.
-ort = "=2.0.0-rc.13"
-ort-sys = "=2.0.0-rc.13"
 cpal = "=0.17.3"
 rubato = "=0.16.2"
 reqwest.workspace = true
@@ -18,6 +14,15 @@ tokio.workspace = true
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# The speech model's runtime. ONNX Runtime publishes no Intel macOS build
+# (ort's download-binaries has none for x86_64-apple-darwin, zeronsh/zeron#841),
+# so an Intel Mac's Zeron goes without dictation (src/lib.rs `AVAILABLE`).
+[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+parakeet-rs = "=0.3.8"
+# Keep the nested ZGX workspace on the same native runtime as ZUI.
+ort = "=2.0.0-rc.13"
+ort-sys = "=2.0.0-rc.13"
 
 [dev-dependencies]
 hound = "3.5"
