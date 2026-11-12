@@ -191,7 +191,8 @@ pub fn data_dir() -> Option<&'static Path> {
 /// that follows channels, stable everywhere else.
 pub fn selected() -> Channel {
     let install = crate::detect_install();
-    if !install.follows_channels() {
+    // A build with its own feed (crate::compiled_feed) publishes stable only.
+    if !install.follows_channels() || crate::compiled_feed().is_some() {
         return Channel::Stable;
     }
     let app_version = match &install {

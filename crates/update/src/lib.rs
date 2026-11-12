@@ -549,11 +549,21 @@ pub const RELEASES_PAGE: &str = "https://github.com/zeronsh/zeron/releases";
 /// installation cannot replace itself.
 pub const LATEST_RELEASE_PAGE: &str = "https://github.com/zeronsh/zeron/releases/latest";
 
+/// The update feed compiled into this build (`ZERON_RELEASE_FEED` at build
+/// time), for a build published somewhere other than the edge, such as the
+/// Intel Mac app's GitHub release. `ZERON_RELEASES_URL` still wins at run time.
+pub fn compiled_feed() -> Option<&'static str> {
+    option_env!("ZERON_RELEASE_FEED").filter(|url| !url.trim().is_empty())
+}
+
 fn release_base(edge_url: &str) -> anyhow::Result<String> {
     if let Ok(url) = std::env::var("ZERON_RELEASES_URL")
         && !url.trim().is_empty()
     {
         return validate_release_override(&url);
+    }
+    if let Some(url) = compiled_feed() {
+        return validate_release_override(url);
     }
     #[cfg(windows)]
     if let Some(url) = windows::release_url()? {
