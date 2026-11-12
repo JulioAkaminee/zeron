@@ -86,6 +86,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: intel-mac
+          # Keep what compiled even when a later step fails, so a rerun
+          # starts from there instead of from zero.
+          cache-on-failure: true
           workspaces: |
             . -> target
             apps/zgx -> target
