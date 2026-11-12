@@ -153,7 +153,9 @@ jobs:
           if-no-files-found: error
       - name: publish the release
         env:
-          GH_TOKEN: ${{ github.token }}
+          # A personal token: GITHUB_TOKEN may not create a tag on a commit
+          # that changes .github/workflows (HTTP 403 on 2026-11-12).
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         run: |
           tag="intel-v$ZGX_VERSION"
           cd target/package-zgx
@@ -168,7 +170,9 @@ jobs:
           fi
       - name: update the app's feed
         env:
-          GH_TOKEN: ${{ github.token }}
+          # A personal token: GITHUB_TOKEN may not create a tag on a commit
+          # that changes .github/workflows (HTTP 403 on 2026-11-12).
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         run: |
           feed=intel-feed
           cd target/package-zgx
