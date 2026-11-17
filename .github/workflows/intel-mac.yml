@@ -37,9 +37,19 @@ jobs:
     env:
       ZERON_RELEASE_FEED: https://github.com/${{ github.repository }}/releases/download/intel-feed
     steps:
+      - name: check release credentials before compiling
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN is required to publish Intel releases (contents and workflows write access)."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY" --jq '.permissions.push == true' | grep -qx true
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: merge the newest Zeron release
         if: inputs.upstream_tag != ''
         env:
@@ -59,6 +69,7 @@ jobs:
           test "$(uname -m)" = x86_64
           version="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
           echo "ZGX_VERSION=$version" >>"$GITHUB_ENV"
+          echo "BUILD_SHA=$(git rev-parse HEAD)" >>"$GITHUB_ENV"
           echo "building Zeron $version for $(uname -m), macOS $(sw_vers -productVersion)"
       # The app icon (dist/macos/Zeron.icon) compiles only with Xcode 26 or later;
       # the image's default Xcode is older. Use the newest Xcode 26 installed.
@@ -155,7 +166,7 @@ jobs:
         env:
           # A personal token: GITHUB_TOKEN may not create a tag on a commit
           # that changes .github/workflows (HTTP 403 on 2026-11-12).
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           tag="intel-v$ZGX_VERSION"
           cd target/package-zgx
@@ -165,21 +176,28 @@ jobs:
             gh release upload "$tag" "${files[@]}" --clobber
             gh release edit "$tag" --notes "$notes" --latest
           else
-            gh release create "$tag" "${files[@]}" --target "$GITHUB_SHA" --latest \
+            # The upstream merge exists only in this checkout. Publish its
+            # commit with the tag so the release points to the code we built,
+            # rather than GITHUB_SHA (the old intel-mac branch tip).
+            if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+                push origin "$BUILD_SHA:refs/tags/$tag"
+            fi
+            gh release create "$tag" "${files[@]}" --verify-tag --target "$BUILD_SHA" --latest \
               --title "Zeron $ZGX_VERSION for Intel Macs" --notes "$notes"
           fi
       - name: update the app's feed
         env:
           # A personal token: GITHUB_TOKEN may not create a tag on a commit
           # that changes .github/workflows (HTTP 403 on 2026-11-12).
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           feed=intel-feed
           cd target/package-zgx
           app="zeron-$ZGX_VERSION-macos-x86_64-app.tar.gz"
           dmg="zeron-$ZGX_VERSION-macos-x86_64.dmg"
           if ! gh release view "$feed" >/dev/null 2>&1; then
-            gh release create "$feed" --target "$GITHUB_SHA" --latest=false --prerelease \
+            gh release create "$feed" --target "$BUILD_SHA" --latest=false --prerelease \
               --title "Intel Mac update feed" \
               --notes "Where Zeron for Intel Macs looks for updates. Download from the intel-v* releases instead."
           fi
