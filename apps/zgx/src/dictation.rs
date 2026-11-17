@@ -159,11 +159,15 @@ impl Service {
     }
     fn status(&self) -> Result<Json, String> {
         Ok(json!({
-            "installed": zeron_voice::installed(&self.dir()?),
-            "size": zeron_voice::download_size(),
+            "available": zeron_voice::AVAILABLE,
+            "installed": zeron_voice::AVAILABLE && zeron_voice::installed(&self.dir()?),
+            "size": if zeron_voice::AVAILABLE { zeron_voice::download_size() } else { 0 },
         }))
     }
     fn start(&mut self, args: &Json) -> Result<Json, String> {
+        if !zeron_voice::AVAILABLE {
+            return Err("unavailable".into());
+        }
         let dir = self.dir()?;
         self.idle()?;
         // (The page says what to do about it: no words for the composer.)
@@ -183,6 +187,9 @@ impl Service {
         Ok(self.state.clone())
     }
     fn download(&mut self) -> Result<Json, String> {
+        if !zeron_voice::AVAILABLE {
+            return Err("unavailable".into());
+        }
         let dir = self.dir()?;
         self.idle()?;
         if DOWNLOADING.swap(true, Ordering::AcqRel) {
@@ -353,6 +360,7 @@ fn levels_value(levels: &[f32]) -> Value {
 /// `dictation.call { op, … }` and `dictation.guard`, for the window's scripts;
 /// what's happening in the shared `dictation`.
 pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
+    host.shared("dictation_available", Value::Bool(zeron_voice::AVAILABLE));
     let (wake, mut work) = zgx::task::latest::<()>();
     let dir = crate::engine::data_dir().map(|d| d.join("models").join(MODEL));
     let me = Rc::new(Dictation {
@@ -370,6 +378,9 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
             let args = value_json(&asked);
             let result = match args["op"].as_str() {
                 Some("inputs") => {
+                    if !zeron_voice::AVAILABLE {
+                        return Ok(json_value(&json!([])));
+                    }
                     let inputs = off_thread(zeron_voice::input_devices)
                         .await
                         .ok_or("Could not list microphones")?;
@@ -567,7 +578,7 @@ mod tests {
     #[test]
     fn dictation_without_a_data_folder_says_so_and_never_panics() {
         let mut s = Service::new(None);
-        assert!(s.status().is_err());
+        assert_eq!(s.status().is_err(), zeron_voice::AVAILABLE);
         assert!(s.start(&json!({})).is_err());
         assert!(s.download().is_err());
         assert!(s.remove().is_err());
@@ -577,8 +588,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut s = Service::new(Some(dir.path().join(MODEL)));
         assert_eq!(s.status().unwrap()["installed"], false);
-        assert_eq!(s.start(&json!({})).unwrap_err(), "no_model");
+        assert_eq!(
+            s.start(&json!({})).unwrap_err(),
+            if zeron_voice::AVAILABLE { "no_model" } else { "unavailable" }
+        );
         assert!(s.session.is_none());
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    #[test]
+    fn intel_dictation_refuses_before_accessing_models_or_starting_workers() {
+        let mut s = Service::new(None);
+        assert_eq!(s.status().unwrap(), json!({"available":false, "installed":false, "size":0}));
+        assert_eq!(s.start(&json!({})).unwrap_err(), "unavailable");
+        assert_eq!(s.download().unwrap_err(), "unavailable");
+        assert!(!s.needs_poll());
+        assert_eq!(s.state["phase"], "idle");
     }
     #[test]
     fn dictation_lease_rejects_ime_and_edits_changed_back() {

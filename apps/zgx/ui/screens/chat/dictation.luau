@@ -16,6 +16,8 @@ local prefs = require("@app/screens/settings/prefs")
 local route = require("@app/screens/shell/route")
 
 local M = {}
+-- Published by the native host before scripts load; independent of session state.
+M.available = ui.shared("dictation_available", true)
 M.state = ui.shared("dictation", { phase = "idle" } :: any)
 M.active = ui.computed(function(): boolean
 	local p = M.state:get().phase
@@ -106,6 +108,7 @@ local function finish()
 	end
 end
 local function start(combo: string?, target: string?)
+	if not M.available:peek() then return end
 	-- (Not on yet: Settings → Voice says how.)
 	if not prefs.dictation:peek() then route.settings("voice") return end
 	if starting or M.active:peek() then return end
@@ -145,6 +148,7 @@ local function Mic(target: string): Node
 	local released = -1000
 	return Button {
 		id = "dictation-microphone", label = ui.t("chat.dictation.hold"), tone = "ghost", shape = "pill", size = "sm", icon = true,
+		disabled = function(): boolean return not M.available:get() end,
 		on_press = function() start(nil, target) end,
 		on_release = function() released = ui.now(); finish() end,
 		on_key = function(e)

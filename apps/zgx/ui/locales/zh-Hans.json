@@ -2330,7 +2330,8 @@
         "label": "听写",
         "description": "按住麦克风说话,松开即可。发送前可以编辑文字。",
         "needs_download": "开启后将下载 {total} MB 的语音模型。",
-        "downloading": "正在下载 · {done} / {total} MB。关闭以取消。"
+        "downloading": "正在下载 · {done} / {total} MB。关闭以取消。",
+        "unavailable_intel": "Intel Mac 不支持听写。"
       },
       "shortcut": {
         "label": "快捷键",

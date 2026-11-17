@@ -4,9 +4,10 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc};
 use zgx_script::{ScriptHost, Value, testing::TestApp};
 type Heard = Rc<RefCell<Vec<Json>>>;
 /// `dictation.call` as the host answers it, heard and never opening a microphone.
-fn played(host: &ScriptHost, installed: bool) -> Heard {
+fn played(host: &ScriptHost, installed: bool, available: bool) -> Heard {
     let heard: Heard = Rc::default();
     let said = heard.clone();
+    host.shared("dictation_available", Value::Bool(available));
     let shared = host.shared("dictation", Value::from_json(r#"{"phase":"idle"}"#).unwrap());
     let installed = Rc::new(std::cell::Cell::new(installed));
     host.async_action("dictation.call", move |v: Value| {
@@ -35,7 +36,7 @@ fn played(host: &ScriptHost, installed: bool) -> Heard {
                 installed.set(false);
                 Json::Null
             }
-            Some("status") => json!({"installed":installed.get(), "size":670000000}),
+            Some("status") => json!({"available":available, "installed":installed.get(), "size":670000000}),
             Some("inputs") => json!([{"id":"usb", "name":"USB microphone"}]),
             _ => Json::Null,
         };
@@ -44,12 +45,15 @@ fn played(host: &ScriptHost, installed: bool) -> Heard {
     heard
 }
 fn at(fixture: &str, installed: bool) -> (TestApp, Heard) {
+    at_available(fixture, installed, true)
+}
+fn at_available(fixture: &str, installed: bool, available: bool) -> (TestApp, Heard) {
     let fixture = fixture.to_string();
     let heard: Rc<RefCell<Option<Heard>>> = Rc::default();
     let keep = heard.clone();
     let mut app = TestApp::new(move |r| {
         let host = ScriptHost::new(r, PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui").join(&fixture));
-        *keep.borrow_mut() = Some(played(&host, installed));
+        *keep.borrow_mut() = Some(played(&host, installed, available));
         host.action("dictation.guard", |_| {});
         host
     });
@@ -234,6 +238,27 @@ fn dictation_stops_when_the_microphone_is_released_outside_it() {
     a.ui.dispatch(zgx::input::InputEvent::PointerMove { x: 500., y: 50. });
     a.ui.dispatch(zgx::input::InputEvent::PointerUp { x: 500., y: 50., button: zgx::input::PointerButton::Primary });
     assert!(a.wait_until(|_| ops(&heard, "cancel") + ops(&heard, "stop") >= 1), "release outside stops capture");
+    assert_eq!(a.error(), None);
+}
+#[test]
+fn intel_voice_controls_explain_unavailability_without_downloading_or_recording() {
+    let (mut a, heard) = at_available("voice_fixture.luau", false, false);
+    assert!(a.wait_until(|_| ops(&heard, "status") >= 1));
+    a.frames(5);
+    assert!(a.tree().contains("Dictation is unavailable on Intel Macs."), "{}", a.tree());
+    assert!(!a.tree().contains("downloads a 670 MB speech model"), "{}", a.tree());
+    a.click("role:switch \"Dictation\"");
+    a.frames(5);
+    assert_eq!(ops(&heard, "download"), 0);
+    assert_eq!(ops(&heard, "inputs"), 0);
+    assert_eq!(a.error(), None);
+
+    // Even a saved enabled preference cannot bypass the host capability.
+    let (mut a, heard) = at_available("dictation_fixture.luau", true, false);
+    a.click("#dictation-microphone");
+    command(&mut a, "shell.dictate");
+    assert_eq!(ops(&heard, "start"), 0);
+    assert_eq!(ops(&heard, "download"), 0);
     assert_eq!(a.error(), None);
 }
 #[test]

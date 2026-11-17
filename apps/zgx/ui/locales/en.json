@@ -2330,7 +2330,8 @@
         "label": "Dictation",
         "description": "Hold the microphone, speak, and let go. You edit the words before sending.",
         "needs_download": "Turning this on downloads a {total} MB speech model.",
-        "downloading": "Downloading · {done} of {total} MB. Turn off to cancel."
+        "downloading": "Downloading · {done} of {total} MB. Turn off to cancel.",
+        "unavailable_intel": "Dictation is unavailable on Intel Macs."
       },
       "shortcut": {
         "label": "Shortcut",

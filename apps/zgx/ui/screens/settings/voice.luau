@@ -37,6 +37,7 @@ local function refresh()
 			size:set(s.size)
 		end)
 	end, function() end)
+	if not dictation.available:peek() then return end
 	host.call("dictation.call", { op = "inputs" }):after(function(list: any)
 		inputs:set(list)
 	end, function() end)
@@ -57,7 +58,7 @@ end
 
 -- The switch says what's so: on while downloading, or on with the model here.
 ui.effect(function()
-	local now = downloading() or (prefs.dictation:get() and installed:get())
+	local now = dictation.available:get() and (downloading() or (prefs.dictation:get() and installed:get()))
 	if on:peek() ~= now then
 		on:set(now)
 	end
@@ -82,6 +83,7 @@ ui.effect(function()
 	end
 end)
 local function flip(want: boolean)
+	if not dictation.available:peek() then on:set(false); return end
 	if downloading() then
 		host.call("dictation.call", { op = "cancel" }):after(function() end, refused)
 	elseif installed:peek() or not want then
@@ -104,6 +106,13 @@ end
 
 local function row(key: string, props: any): Node
 	return search.anchor(key, ds.Settings.Row(props))
+end
+local function available_control(child: Node): Node
+	return ui.div {
+		disabled = function(): boolean return not dictation.available:get() end,
+		opacity = function() return if dictation.available:get() then 1 else "$zeron.disabled" end,
+		child,
+	}
 end
 local function microphones(): { any }
 	local saved = prefs.dictation_input:get()
@@ -130,6 +139,9 @@ function M.view(): Node
 				row("dictation", {
 					label = ui.t("settings.voice.dictation.label"),
 					description = function(): string
+						if not dictation.available:get() then
+							return ui.t("settings.voice.dictation.unavailable_intel"):get()
+						end
 						local s = dictation.state:get()
 						if s.phase == "downloading" then
 							return ui.t("settings.voice.dictation.downloading", { done = mb(s.bytes or 0), total = mb(s.total or 0) }):get()
@@ -138,7 +150,7 @@ function M.view(): Node
 						end
 						return ui.t("settings.voice.dictation.description"):get()
 					end,
-					control = ds.Switch { value = on, label = ui.t("settings.voice.dictation.label"), on_change = flip },
+					control = available_control(ds.Switch { value = on, label = ui.t("settings.voice.dictation.label"), on_change = flip }),
 				}),
 				-- (Stays put while it's off, dimmed and out of reach.)
 				search.anchor(
@@ -160,7 +172,7 @@ function M.view(): Node
 				row("shortcut", {
 					label = ui.t("settings.voice.shortcut.label"),
 					description = ui.t("settings.voice.shortcut.description"),
-					control = Shortcut.Recorder {
+					control = available_control(Shortcut.Recorder {
 						value = function(): string
 							return keys.combo(SHORTCUT)
 						end,
@@ -174,12 +186,12 @@ function M.view(): Node
 							end
 							keys.bind(SHORTCUT, combo)
 						end,
-					},
+					}),
 				}),
 			},
 		},
 		ui.show(function(): boolean
-			return installed:get() and not downloading()
+			return dictation.available:get() and installed:get() and not downloading()
 		end, ds.Settings.Section {
 			ds.Settings.Group {
 				row("model", {

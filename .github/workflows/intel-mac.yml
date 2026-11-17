@@ -4,7 +4,8 @@ name: intel mac
 # Runtime has no Intel macOS build). Builds the engine and the zgx app on an
 # Intel runner, packages them as release.yml's macOS job does, checks the
 # bundle, and publishes the dmg as a GitHub release of this repository.
-# Unsigned (ad-hoc): the first launch needs Gatekeeper's "Open Anyway".
+# Developer ID signed and notarized when apple-release's five Apple secrets
+# are configured. Without them, builds remain ad-hoc signed.
 #
 # The app updates itself from this repository's "intel-feed" release
 # (ZERON_RELEASE_FEED, crates/update `compiled_feed`): the app tarball, the
@@ -22,6 +23,14 @@ on:
         description: "A zeronsh/zeron release tag to merge in before building (intel mac sync passes the newest)"
         required: false
         default: ""
+      build_only:
+        description: "Build and upload artifacts without changing releases or the Intel update feed"
+        type: boolean
+        default: false
+      require_signing:
+        description: "Require valid Apple signing and notarization credentials before compiling"
+        type: boolean
+        default: false
 
 concurrency:
   group: intel-mac-${{ github.ref }}
@@ -33,11 +42,13 @@ permissions:
 jobs:
   macos-x86_64:
     runs-on: macos-15-intel
+    environment: apple-release
     timeout-minutes: 240
     env:
       ZERON_RELEASE_FEED: https://github.com/${{ github.repository }}/releases/download/intel-feed
     steps:
       - name: check release credentials before compiling
+        if: ${{ !inputs.build_only }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
@@ -83,6 +94,16 @@ jobs:
           fi
           echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
           DEVELOPER_DIR="$xcode/Contents/Developer" xcodebuild -version
+      - name: prepare signing and notarization
+        id: signing
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          REQUIRE_SIGNING: ${{ inputs.require_signing || false }}
+        run: bash scripts/intel-macos-signing.sh prepare
       - name: rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       # zgx's terminals are Ghostty's, built with Zig 0.16 (zgx-ghostty-sys).
@@ -116,6 +137,9 @@ jobs:
             echo "the app still links ONNX Runtime" >&2
             exit 1
           fi
+      - name: dictation controls on Intel
+        working-directory: apps/zgx
+        run: cargo test --release --locked --test dictation
       - name: the engine, from this commit
         env:
           ZERON_ENGINE_VERSION: ${{ env.ZGX_VERSION }}
@@ -149,6 +173,11 @@ jobs:
           codesign -d --entitlements - "$app"
           test -f "target/package-zgx/zeron-$ZGX_VERSION-macos-x86_64.dmg"
           hdiutil verify "target/package-zgx/zeron-$ZGX_VERSION-macos-x86_64.dmg"
+          if [ "$SIGNING_ENABLED" = true ]; then
+            spctl --assess --type execute --verbose=2 "$app"
+            xcrun stapler validate "$app"
+            xcrun stapler validate "target/package-zgx/zeron-$ZGX_VERSION-macos-x86_64.dmg"
+          fi
           du -sh "$app"
       - name: checksums
         run: |
@@ -163,6 +192,7 @@ jobs:
             target/package-zgx/SHA256SUMS.txt
           if-no-files-found: error
       - name: publish the release
+        if: ${{ !inputs.build_only }}
         env:
           # A personal token: GITHUB_TOKEN may not create a tag on a commit
           # that changes .github/workflows (HTTP 403 on 2026-11-12).
@@ -171,7 +201,12 @@ jobs:
           tag="intel-v$ZGX_VERSION"
           cd target/package-zgx
           files=(zeron-*-macos-x86_64.dmg zeron-*-macos-x86_64-app.tar.gz SHA256SUMS.txt)
-          notes="Zeron $ZGX_VERSION for Intel Macs (x86_64), built from $(git rev-parse --short HEAD) (${{ github.ref_name }}${{ inputs.upstream_tag && format(' + {0}', inputs.upstream_tag) || '' }}). Installed copies update themselves from here. Dictation is not included (ONNX Runtime has no Intel macOS build). Unsigned: after copying Zeron.app to Applications, open it once with right-click → Open, or System Settings → Privacy & Security → Open Anyway."
+          if [ "$SIGNING_ENABLED" = true ]; then
+            signing_notes="Signed with Developer ID and notarized by Apple."
+          else
+            signing_notes="Ad-hoc signed: after copying Zeron.app to Applications, open it once with right-click → Open, or System Settings → Privacy & Security → Open Anyway."
+          fi
+          notes="Zeron $ZGX_VERSION for Intel Macs (x86_64), built from $(git rev-parse --short HEAD) (${{ github.ref_name }}${{ inputs.upstream_tag && format(' + {0}', inputs.upstream_tag) || '' }}). Installed copies update themselves from here. Dictation is not included (ONNX Runtime has no Intel macOS build). $signing_notes"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${files[@]}" --clobber
             gh release edit "$tag" --notes "$notes" --latest
@@ -187,6 +222,7 @@ jobs:
               --title "Zeron $ZGX_VERSION for Intel Macs" --notes "$notes"
           fi
       - name: update the app's feed
+        if: ${{ !inputs.build_only }}
         env:
           # A personal token: GITHUB_TOKEN may not create a tag on a commit
           # that changes .github/workflows (HTTP 403 on 2026-11-12).
@@ -221,3 +257,6 @@ jobs:
           gh release view "$feed" --json assets --jq '.assets[].name' | while read -r name; do
             case "$name" in manifest.json|"$app"|"$dmg") ;; *) gh release delete-asset "$feed" "$name" --yes ;; esac
           done
+      - name: remove signing credentials from the runner
+        if: always() && steps.signing.outcome != 'skipped'
+        run: bash scripts/intel-macos-signing.sh cleanup
