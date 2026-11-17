@@ -139,7 +139,9 @@ jobs:
           fi
       - name: dictation controls on Intel
         working-directory: apps/zgx
-        run: cargo test --release --locked --test dictation
+        # Each UI fixture has a wall-clock script budget. Running the hosts
+        # together can time out during module loading on the Intel runner.
+        run: cargo test --release --locked --test dictation -- --test-threads=1
       - name: the engine, from this commit
         env:
           ZERON_ENGINE_VERSION: ${{ env.ZGX_VERSION }}
